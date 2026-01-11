@@ -1,0 +1,15 @@
+[Unit]
+Description=Sleepless OpenCode - 24/7 AI Agent Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/projects/sleepless-opencode
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
