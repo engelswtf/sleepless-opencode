@@ -6,6 +6,7 @@ export interface DaemonConfig {
   pollIntervalMs: number;
   workspacePath: string;
   opencodePort?: number;
+  taskTimeoutMs?: number;
 }
 
 export class Daemon {
@@ -95,10 +96,15 @@ export class Daemon {
 
   private async runTask(task: Task): Promise<string> {
     const workDir = task.project_path || this.config.workspacePath;
+    const timeoutMs = this.config.taskTimeoutMs || 30 * 60 * 1000;
 
     const { client, server } = await createOpencode({
       port: this.config.opencodePort,
       config: {},
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`Task timed out after ${timeoutMs / 1000}s`)), timeoutMs);
     });
 
     try {
@@ -106,36 +112,42 @@ export class Daemon {
         body: { title: `Sleepless Task #${task.id}` },
       });
 
-      this.queue.setRunning(task.id, session.data!.id);
+      if (!session.data?.id) {
+        throw new Error("Failed to create OpenCode session");
+      }
 
-      const response = await client.session.prompt({
-        path: { id: session.data!.id },
+      this.queue.setRunning(task.id, session.data.id);
+
+      await client.session.prompt({
+        path: { id: session.data.id },
         body: {
           parts: [{ type: "text", text: task.prompt }],
         },
       });
 
-      const events = await client.event.subscribe();
-      for await (const event of events.stream) {
-        if (event.type === "session.idle" || event.type === "session.error") {
-          break;
+      const taskPromise = (async () => {
+        const events = await client.event.subscribe();
+        for await (const event of events.stream) {
+          if (event.type === "session.idle" || event.type === "session.error") {
+            break;
+          }
         }
-      }
 
-      const messages = await client.session.messages({
-        path: { id: session.data!.id },
-      });
+        const messages = await client.session.messages({
+          path: { id: session.data!.id },
+        });
 
-      const lastAssistantMessage = messages.data
-        ?.filter((m: any) => m.info.role === "assistant")
-        .pop();
+        const lastAssistantMessage = messages.data
+          ?.filter((m: any) => m.info.role === "assistant")
+          .pop();
 
-      const resultText = lastAssistantMessage?.parts
-        ?.filter((p: any) => p.type === "text")
-        .map((p: any) => p.text)
-        .join("\n") || "Task completed";
+        return lastAssistantMessage?.parts
+          ?.filter((p: any) => p.type === "text")
+          .map((p: any) => p.text)
+          .join("\n") || "Task completed";
+      })();
 
-      return resultText;
+      return await Promise.race([taskPromise, timeoutPromise]);
     } finally {
       server.close();
     }

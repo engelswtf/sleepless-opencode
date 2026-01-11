@@ -11,6 +11,7 @@ import {
 } from "discord.js";
 import { TaskQueue, TaskPriority } from "./db.js";
 import { Notification, NotificationChannel } from "./notifier.js";
+import { validatePrompt, validateProjectPath } from "./validation.js";
 
 export interface DiscordConfig {
   token: string;
@@ -144,6 +145,18 @@ export class DiscordBot implements NotificationChannel {
     const prompt = interaction.options.getString("prompt", true);
     const project = interaction.options.getString("project") || undefined;
     const priority = (interaction.options.getString("priority") || "medium") as TaskPriority;
+
+    const promptValidation = validatePrompt(prompt);
+    if (!promptValidation.valid) {
+      await interaction.reply({ content: `❌ ${promptValidation.error}`, ephemeral: true });
+      return;
+    }
+
+    const pathValidation = validateProjectPath(project);
+    if (!pathValidation.valid) {
+      await interaction.reply({ content: `❌ ${pathValidation.error}`, ephemeral: true });
+      return;
+    }
 
     const task = this.queue.create({
       prompt,

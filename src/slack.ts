@@ -1,6 +1,7 @@
 import { App } from "@slack/bolt";
 import { TaskQueue, TaskPriority } from "./db.js";
 import { Notification, NotificationChannel } from "./notifier.js";
+import { validatePrompt } from "./validation.js";
 
 export interface SlackConfig {
   botToken: string;
@@ -35,6 +36,12 @@ export class SlackBot implements NotificationChannel {
 
       if (!prompt) {
         await respond("Usage: /task <prompt> [-p high|medium|low]");
+        return;
+      }
+
+      const promptValidation = validatePrompt(prompt);
+      if (!promptValidation.valid) {
+        await respond(`❌ ${promptValidation.error}`);
         return;
       }
 
