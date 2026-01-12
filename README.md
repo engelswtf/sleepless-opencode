@@ -36,11 +36,11 @@ OpenCode is powerful, but it needs you at the keyboard. **sleepless-opencode** c
 
 ```
 You: /task "Refactor auth module and add tests"
-Bot: ✅ Task #42 queued (urgent priority)
+Bot: [OK] Task #42 queued (urgent priority)
 
 ... you go to sleep ...
 
-Bot: ✅ Task #42 completed
+Bot: [DONE] Task #42 completed
      - Refactored 12 files
      - Added 47 test cases  
      - All tests passing
@@ -80,16 +80,22 @@ npm start
 
 ## Features
 
-### 🔄 Persistent Task Queue
+### Persistent Task Queue
+<img src="https://img.shields.io/badge/SQLite-WAL_mode-003B57?style=flat-square&logo=sqlite" alt="SQLite" />
+
 SQLite-backed queue survives restarts, crashes, and reboots. Your tasks are safe.
 
-### ⏰ Task Timeout & Recovery
+### Task Timeout & Recovery
+<img src="https://img.shields.io/badge/timeout-30_min-orange?style=flat-square" alt="Timeout" />
+
 - Configurable timeout (default 30 min) kills stuck tasks
 - Exponential backoff with jitter for retries
 - Smart rate limit handling (respects `Retry-After` headers)
 - Automatic SDK reconnection when in CLI fallback mode
 
-### 🔗 Task Dependencies
+### Task Dependencies
+<img src="https://img.shields.io/badge/workflow-chaining-blueviolet?style=flat-square" alt="Chaining" />
+
 Chain tasks together. Task B waits for Task A to complete.
 
 ```bash
@@ -100,10 +106,13 @@ sleepless add "Write API tests" --depends-on 1
 # Task #2 added - depends on #1
 ```
 
-### 🛑 Graceful Shutdown
+### Graceful Shutdown
+<img src="https://img.shields.io/badge/SIGTERM-graceful-success?style=flat-square" alt="Graceful" />
+
 `SIGTERM` waits for the current task to complete (configurable timeout), then exits cleanly. No orphaned sessions.
 
-### 🏥 Health & Monitoring
+### Health & Monitoring
+<img src="https://img.shields.io/badge/Prometheus-metrics-E6522C?style=flat-square&logo=prometheus" alt="Prometheus" />
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -127,7 +136,10 @@ curl http://localhost:9090/health
 }
 ```
 
-### 📢 Multi-Channel Notifications
+### Multi-Channel Notifications
+<img src="https://img.shields.io/badge/Discord-bot-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord" />
+<img src="https://img.shields.io/badge/Slack-bot-4A154B?style=flat-square&logo=slack&logoColor=white" alt="Slack" />
+<img src="https://img.shields.io/badge/Webhook-HTTP_POST-blue?style=flat-square" alt="Webhook" />
 
 | Channel | Setup |
 |---------|-------|
@@ -135,7 +147,8 @@ curl http://localhost:9090/health
 | **Slack** | Socket mode bot with commands |
 | **Webhook** | HTTP POST to any URL with HMAC signature |
 
-### 🧠 Smart Completion Detection
+### Smart Completion Detection
+<img src="https://img.shields.io/badge/detection-multi--layer-informational?style=flat-square" alt="Detection" />
 
 The daemon doesn't just wait for "idle" - it validates completion:
 
@@ -144,7 +157,9 @@ The daemon doesn't just wait for "idle" - it validates completion:
 3. **Stability Detection**: 3 consecutive stable polls before marking done
 4. **Completion Signals**: Recognizes `[TASK_COMPLETE]` markers
 
-### 📊 Structured Logging
+### Structured Logging
+<img src="https://img.shields.io/badge/format-JSON-yellow?style=flat-square" alt="JSON" />
+<img src="https://img.shields.io/badge/rotation-automatic-lightgrey?style=flat-square" alt="Rotation" />
 
 ```bash
 # Pretty logs (default)
@@ -439,14 +454,16 @@ tmux new-session -d -s sleepless "cd /path/to/sleepless-opencode && npm start"
 
 ## Security
 
-- ✅ Input validation on all prompts and paths
-- ✅ Parameterized SQL queries (no injection)
-- ✅ WAL mode for SQLite concurrency
-- ✅ Project path restrictions
-- ✅ Task timeouts prevent infinite loops
-- ✅ Access control for Discord/Slack bots
-- ✅ Lock file prevents duplicate daemon instances
-- ✅ HMAC signatures for webhook verification
+| Feature | Status |
+|---------|--------|
+| Input validation on all prompts and paths | <img src="https://img.shields.io/badge/-implemented-success?style=flat-square" /> |
+| Parameterized SQL queries (no injection) | <img src="https://img.shields.io/badge/-implemented-success?style=flat-square" /> |
+| WAL mode for SQLite concurrency | <img src="https://img.shields.io/badge/-implemented-success?style=flat-square" /> |
+| Project path restrictions | <img src="https://img.shields.io/badge/-implemented-success?style=flat-square" /> |
+| Task timeouts prevent infinite loops | <img src="https://img.shields.io/badge/-implemented-success?style=flat-square" /> |
+| Access control for Discord/Slack bots | <img src="https://img.shields.io/badge/-implemented-success?style=flat-square" /> |
+| Lock file prevents duplicate daemon instances | <img src="https://img.shields.io/badge/-implemented-success?style=flat-square" /> |
+| HMAC signatures for webhook verification | <img src="https://img.shields.io/badge/-implemented-success?style=flat-square" /> |
 
 ---
 
