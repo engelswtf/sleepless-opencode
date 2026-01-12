@@ -14,20 +14,37 @@ program
   .command("add")
   .description("Add a task to the queue")
   .argument("<prompt>", "Task prompt")
-  .option("-p, --priority <level>", "Priority: high, medium, low", "medium")
+  .option("-p, --priority <level>", "Priority: urgent, high, medium, low", "medium")
   .option("--project <path>", "Project path")
+  .option("--depends-on <id>", "Task ID this task depends on")
   .action((prompt, options) => {
     const db = initDb();
     const queue = new TaskQueue(db);
+
+    const dependsOn = options.dependsOn ? parseInt(options.dependsOn, 10) : undefined;
+    
+    if (dependsOn) {
+      const parentTask = queue.get(dependsOn);
+      if (!parentTask) {
+        console.error(`Error: Task #${dependsOn} not found`);
+        db.close();
+        process.exit(1);
+      }
+    }
 
     const task = queue.create({
       prompt,
       priority: options.priority,
       project_path: options.project,
       source: "cli",
+      depends_on: dependsOn,
     });
 
-    console.log(`Task #${task.id} added (${task.priority} priority)`);
+    let msg = `Task #${task.id} added (${task.priority} priority)`;
+    if (dependsOn) {
+      msg += ` - depends on #${dependsOn}`;
+    }
+    console.log(msg);
     db.close();
   });
 

@@ -25,6 +25,7 @@ export interface Task {
   completed_at: string | null;
   created_by: string | null;
   source: "discord" | "slack" | "cli";
+  depends_on: number | null;
   progress_tool_calls: number;
   progress_last_tool: string | null;
   progress_last_message: string | null;
@@ -39,6 +40,7 @@ export interface TaskCreate {
   max_retries?: number;
   created_by?: string;
   source: "discord" | "slack" | "cli";
+  depends_on?: number;
 }
 
 const DATA_DIR = process.env.SLEEPLESS_DATA_DIR || join(process.cwd(), "data");
@@ -91,6 +93,7 @@ export function initDb(): Database.Database {
     `ALTER TABLE tasks ADD COLUMN progress_last_tool TEXT`,
     `ALTER TABLE tasks ADD COLUMN progress_last_message TEXT`,
     `ALTER TABLE tasks ADD COLUMN progress_updated_at TEXT`,
+    `ALTER TABLE tasks ADD COLUMN depends_on INTEGER`,
   ];
   
   for (const sql of migrations) {
@@ -109,8 +112,8 @@ export class TaskQueue {
 
   create(task: TaskCreate): Task {
     const stmt = this.db.prepare(`
-      INSERT INTO tasks (prompt, project_path, priority, max_iterations, max_retries, created_by, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (prompt, project_path, priority, max_iterations, max_retries, created_by, source, depends_on)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -120,7 +123,8 @@ export class TaskQueue {
       task.max_iterations || 10,
       task.max_retries || 3,
       task.created_by || null,
-      task.source
+      task.source,
+      task.depends_on || null
     );
 
     return this.get(result.lastInsertRowid as number)!;
@@ -237,19 +241,38 @@ export class TaskQueue {
   getNextRetryable(): Task | undefined {
     const now = new Date().toISOString();
     return this.db.prepare(`
-      SELECT * FROM tasks 
-      WHERE status = 'pending'
-        AND (retry_after IS NULL OR retry_after <= ?)
+      SELECT t.* FROM tasks t
+      LEFT JOIN tasks dep ON t.depends_on = dep.id
+      WHERE t.status = 'pending'
+        AND (t.retry_after IS NULL OR t.retry_after <= ?)
+        AND (t.depends_on IS NULL OR dep.status = 'done')
       ORDER BY 
-        CASE priority 
+        CASE t.priority 
           WHEN 'urgent' THEN 0
           WHEN 'high' THEN 1 
           WHEN 'medium' THEN 2 
           WHEN 'low' THEN 3 
         END,
-        created_at ASC
+        t.created_at ASC
       LIMIT 1
     `).get(now) as Task | undefined;
+  }
+
+  getDependentTasks(taskId: number): Task[] {
+    return this.db.prepare(`
+      SELECT * FROM tasks WHERE depends_on = ? AND status = 'pending'
+    `).all(taskId) as Task[];
+  }
+
+  failDependentTasks(taskId: number, reason: string): void {
+    this.db.prepare(`
+      UPDATE tasks 
+      SET status = 'failed', 
+          error = ?,
+          error_type = 'dependency_failed',
+          completed_at = datetime('now')
+      WHERE depends_on = ? AND status = 'pending'
+    `).run(reason, taskId);
   }
 
   list(status?: TaskStatus, limit = 10): Task[] {

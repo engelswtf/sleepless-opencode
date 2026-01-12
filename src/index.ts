@@ -6,6 +6,9 @@ import { Daemon } from "./daemon.js";
 import { Notifier } from "./notifier.js";
 import { DiscordBot } from "./discord.js";
 import { SlackBot } from "./slack.js";
+import { HealthServer } from "./health.js";
+
+const VERSION = "1.0.0";
 
 const LOCK_FILE = join(process.cwd(), "data", ".daemon.lock");
 
@@ -78,8 +81,18 @@ async function main() {
     console.log("[main] Slack bot configured");
   }
 
-  if (!discordBot && !slackBot) {
-    console.error("[main] ERROR: No bot configured. Set DISCORD_BOT_TOKEN or SLACK_BOT_TOKEN/SLACK_APP_TOKEN");
+  if (process.env.WEBHOOK_URL) {
+    const webhookEvents = process.env.WEBHOOK_EVENTS?.split(",").filter(Boolean) as ("started" | "completed" | "failed")[] | undefined;
+    notifier.addWebhook({
+      url: process.env.WEBHOOK_URL,
+      secret: process.env.WEBHOOK_SECRET,
+      events: webhookEvents,
+    });
+    console.log("[main] Webhook configured");
+  }
+
+  if (!discordBot && !slackBot && !process.env.WEBHOOK_URL) {
+    console.error("[main] ERROR: No notification channel configured. Set DISCORD_BOT_TOKEN, SLACK_BOT_TOKEN/SLACK_APP_TOKEN, or WEBHOOK_URL");
     process.exit(1);
   }
 
@@ -93,18 +106,47 @@ async function main() {
     agent: process.env.OPENCODE_AGENT,
   });
 
-  const shutdown = async () => {
-    console.log("\n[main] Shutting down...");
-    daemon.stop();
+  const healthPort = parseInt(process.env.HEALTH_PORT || "9090", 10);
+  const healthServer = new HealthServer(queue, daemon, VERSION);
+  await healthServer.start(healthPort);
+
+  let isShuttingDown = false;
+
+  const gracefulShutdown = async (signal: string) => {
+    if (isShuttingDown) {
+      console.log(`\n[main] Already shutting down, please wait...`);
+      return;
+    }
+    isShuttingDown = true;
+
+    console.log(`\n[main] Received ${signal}, starting graceful shutdown...`);
+    
+    const shutdownTimeout = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || "60000", 10);
+    await daemon.gracefulStop(shutdownTimeout);
+    
+    healthServer.stop();
     if (discordBot) await discordBot.stop();
     if (slackBot) await slackBot.stop();
     db.close();
     releaseLock();
+    console.log("[main] Shutdown complete");
     process.exit(0);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  const forceShutdown = () => {
+    console.log("\n[main] Force shutdown requested");
+    daemon.stop();
+    healthServer.stop();
+    if (discordBot) discordBot.stop();
+    if (slackBot) slackBot.stop();
+    db.close();
+    releaseLock();
+    process.exit(1);
+  };
+
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGQUIT", forceShutdown);
 
   if (discordBot) await discordBot.start();
   if (slackBot) await slackBot.start();

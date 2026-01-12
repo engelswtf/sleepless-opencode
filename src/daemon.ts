@@ -11,10 +11,12 @@ interface AgentInfo {
   mode: string;
 }
 
-const TASK_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const MIN_STABILITY_TIME_MS = 10 * 1000;
 const MIN_IDLE_TIME_MS = 5000;
 const STABLE_POLLS_REQUIRED = 3;
+const TIMEOUT_CHECK_INTERVAL_MS = 10 * 1000;
+const SDK_RECONNECT_INTERVAL_MS = 60 * 1000;
 
 type ErrorType = 
   | "rate_limit"
@@ -165,6 +167,11 @@ export class Daemon {
   private client: OpencodeClient | null = null;
   private server: { url: string; close(): void } | null = null;
   private abortController: AbortController | null = null;
+  private timeoutChecker: NodeJS.Timeout | null = null;
+  private sdkReconnectChecker: NodeJS.Timeout | null = null;
+  private taskStartTime: Date | null = null;
+  private shuttingDown = false;
+  private shutdownResolve: (() => void) | null = null;
   
   private taskStates: Map<number, TaskState> = new Map();
   private activeTasks: Set<number> = new Set();
@@ -331,7 +338,7 @@ export class Daemon {
     const now = Date.now();
     for (const [taskId, state] of this.taskStates.entries()) {
       const age = now - state.startedAt.getTime();
-      if (age > TASK_TTL_MS) {
+      if (age > DEFAULT_TASK_TIMEOUT_MS) {
         console.log(`[daemon] Pruning stale task state for task #${taskId}`);
         this.taskStates.delete(taskId);
         this.activeTasks.delete(taskId);
@@ -396,7 +403,7 @@ export class Daemon {
       console.log(`[daemon] OpenCode SDK server started at ${this.server.url}`);
     } catch (error) {
       console.error("[daemon] Failed to initialize OpenCode SDK, falling back to CLI mode:", error);
-      // SDK init failed, we'll use CLI mode as fallback
+      this.startSdkReconnectChecker();
     }
 
     const stuckTask = this.queue.getRunning();
@@ -404,6 +411,8 @@ export class Daemon {
       console.log(`[daemon] Found task #${stuckTask.id} stuck in running state, resetting to pending`);
       this.queue.resetToPending(stuckTask.id);
     }
+
+    this.startTimeoutChecker();
 
     while (this.running) {
       try {
@@ -418,6 +427,8 @@ export class Daemon {
 
   stop(): void {
     this.running = false;
+    this.stopTimeoutChecker();
+    this.stopSdkReconnectChecker();
     if (this.currentProcess) {
       this.currentProcess.kill("SIGTERM");
     }
@@ -434,7 +445,137 @@ export class Daemon {
     console.log("[daemon] Stopping daemon...");
   }
 
+  async gracefulStop(timeoutMs = 60000): Promise<void> {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    this.running = false;
+
+    if (!this.currentTask) {
+      console.log("[daemon] No task running, shutting down immediately");
+      this.stop();
+      return;
+    }
+
+    console.log(`[daemon] Graceful shutdown: waiting for task #${this.currentTask.id} to complete (max ${timeoutMs / 1000}s)...`);
+
+    return new Promise<void>((resolve) => {
+      this.shutdownResolve = resolve;
+
+      const forceShutdown = setTimeout(() => {
+        console.log("[daemon] Graceful shutdown timeout, forcing stop...");
+        this.stop();
+        resolve();
+      }, timeoutMs);
+
+      const checkComplete = setInterval(() => {
+        if (!this.currentTask) {
+          clearTimeout(forceShutdown);
+          clearInterval(checkComplete);
+          console.log("[daemon] Task completed, shutting down");
+          this.stop();
+          resolve();
+        }
+      }, 1000);
+    });
+  }
+
+  isShuttingDown(): boolean {
+    return this.shuttingDown;
+  }
+
+  private startTimeoutChecker(): void {
+    this.timeoutChecker = setInterval(() => {
+      this.checkTaskTimeout();
+    }, TIMEOUT_CHECK_INTERVAL_MS);
+    console.log(`[daemon] Task timeout checker started (${DEFAULT_TASK_TIMEOUT_MS / 1000 / 60}min timeout)`);
+  }
+
+  private stopTimeoutChecker(): void {
+    if (this.timeoutChecker) {
+      clearInterval(this.timeoutChecker);
+      this.timeoutChecker = null;
+    }
+  }
+
+  private startSdkReconnectChecker(): void {
+    if (this.client) return;
+    
+    this.sdkReconnectChecker = setInterval(() => {
+      this.tryReconnectSdk();
+    }, SDK_RECONNECT_INTERVAL_MS);
+    console.log(`[daemon] SDK reconnect checker started (every ${SDK_RECONNECT_INTERVAL_MS / 1000}s)`);
+  }
+
+  private stopSdkReconnectChecker(): void {
+    if (this.sdkReconnectChecker) {
+      clearInterval(this.sdkReconnectChecker);
+      this.sdkReconnectChecker = null;
+    }
+  }
+
+  private async tryReconnectSdk(): Promise<void> {
+    if (this.client || this.shuttingDown || this.currentTask) return;
+
+    try {
+      console.log("[daemon] Attempting SDK reconnection...");
+      this.abortController = new AbortController();
+      const opencode = await createOpencode({
+        signal: this.abortController.signal,
+        timeout: 15000,
+      });
+      this.client = opencode.client;
+      this.server = opencode.server;
+      console.log(`[daemon] SDK reconnected at ${this.server.url}`);
+      this.stopSdkReconnectChecker();
+    } catch (error) {
+      console.log("[daemon] SDK reconnection failed, will retry...");
+    }
+  }
+
+  private checkTaskTimeout(): void {
+    if (!this.currentTask || !this.taskStartTime) return;
+
+    const timeoutMs = this.config.taskTimeoutMs || DEFAULT_TASK_TIMEOUT_MS;
+    const elapsed = Date.now() - this.taskStartTime.getTime();
+
+    if (elapsed > timeoutMs) {
+      const taskId = this.currentTask.id;
+      console.error(`[daemon] Task #${taskId} timed out after ${Math.round(elapsed / 1000 / 60)}min, killing...`);
+
+      if (this.currentProcess) {
+        this.currentProcess.kill("SIGTERM");
+        setTimeout(() => {
+          if (this.currentProcess) {
+            this.currentProcess.kill("SIGKILL");
+          }
+        }, 5000);
+      }
+
+      if (this.abortController) {
+        this.abortController.abort();
+      }
+
+      this.queue.setFailed(taskId, `Task timed out after ${Math.round(elapsed / 1000)}s`, "timeout");
+      this.notifier.notify({
+        type: "failed",
+        task: this.queue.get(taskId)!,
+        message: `Task #${taskId} timed out`,
+        error: `Exceeded ${timeoutMs / 1000 / 60}min timeout`,
+      });
+
+      this.currentTask = null;
+      this.currentProcess = null;
+      this.taskStartTime = null;
+      this.taskStates.delete(taskId);
+      this.activeTasks.delete(taskId);
+    }
+  }
+
   private async processNext(): Promise<void> {
+    if (this.shuttingDown) {
+      return;
+    }
+
     const runningTask = this.queue.getRunning();
     if (runningTask) {
       return;
@@ -446,6 +587,7 @@ export class Daemon {
     }
 
     this.currentTask = task;
+    this.taskStartTime = new Date();
     console.log(`[daemon] Processing task #${task.id}: ${task.prompt.slice(0, 50)}...`);
 
     try {
@@ -486,13 +628,22 @@ export class Daemon {
       }
       
       const shouldRetry = errorType !== "agent_not_found" && errorType !== "context_exceeded";
-      const retryDelay = this.calculateRetryDelay(updatedTask.retry_count);
-      const canRetry = shouldRetry && this.queue.scheduleRetry(task.id, retryDelay);
+      
+      let retryDelay: number;
+      const serverRetryAfter = this.extractRetryAfterHeader(error);
+      if (serverRetryAfter && errorType === "rate_limit") {
+        retryDelay = serverRetryAfter + Math.random() * 10;
+        console.log(`[daemon] Using server-provided retry-after: ${serverRetryAfter}s`);
+      } else {
+        retryDelay = this.calculateRetryDelay(updatedTask.retry_count, errorType);
+      }
+      
+      const canRetry = shouldRetry && this.queue.scheduleRetry(task.id, Math.ceil(retryDelay));
 
       const errorDetails = `[${errorType}] ${errorMsg}`;
       
       if (canRetry) {
-        console.log(`[daemon] Task #${task.id} failed (${errorType}), scheduling retry ${updatedTask.retry_count + 1}/${updatedTask.max_retries} in ${retryDelay}s`);
+        console.log(`[daemon] Task #${task.id} failed (${errorType}), scheduling retry ${updatedTask.retry_count + 1}/${updatedTask.max_retries} in ${Math.ceil(retryDelay)}s`);
         await this.notifier.notify({
           type: "failed",
           task: this.queue.get(task.id)!,
@@ -501,6 +652,13 @@ export class Daemon {
         });
       } else {
         this.queue.setFailed(task.id, errorDetails, errorType);
+        
+        const dependentTasks = this.queue.getDependentTasks(task.id);
+        if (dependentTasks.length > 0) {
+          console.log(`[daemon] Failing ${dependentTasks.length} dependent tasks due to task #${task.id} failure`);
+          this.queue.failDependentTasks(task.id, `Dependency task #${task.id} failed`);
+        }
+        
         console.error(`[daemon] Task #${task.id} failed permanently (${errorType}) after ${updatedTask.retry_count} retries:`, errorMsg);
         await this.notifier.notify({
           type: "failed",
@@ -512,6 +670,7 @@ export class Daemon {
     } finally {
       this.currentTask = null;
       this.currentProcess = null;
+      this.taskStartTime = null;
       this.taskStates.delete(task.id);
       this.activeTasks.delete(task.id);
     }
@@ -1067,14 +1226,45 @@ IMPORTANT INSTRUCTIONS:
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private calculateRetryDelay(retryCount: number): number {
+  private calculateRetryDelay(retryCount: number, errorType?: ErrorType): number {
+    if (errorType === "rate_limit") {
+      const baseDelay = 60;
+      const maxDelay = 900;
+      const jitter = Math.random() * 30;
+      return Math.min(baseDelay * Math.pow(2, retryCount), maxDelay) + jitter;
+    }
+    
     const baseDelay = 30;
     const maxDelay = 600;
-    const delay = Math.min(baseDelay * Math.pow(2, retryCount), maxDelay);
-    return delay;
+    const jitter = Math.random() * 10;
+    return Math.min(baseDelay * Math.pow(2, retryCount), maxDelay) + jitter;
+  }
+
+  private extractRetryAfterHeader(error: unknown): number | null {
+    const errorObj = error as Record<string, unknown>;
+    const headers = errorObj.headers as Record<string, string> | undefined;
+    
+    if (headers?.["retry-after"]) {
+      const retryAfter = parseInt(headers["retry-after"], 10);
+      if (!isNaN(retryAfter)) {
+        return retryAfter;
+      }
+    }
+    
+    const message = this.getErrorMessage(error);
+    const match = message.match(/retry.{0,10}(\d+)\s*(?:second|sec|s)/i);
+    if (match) {
+      return parseInt(match[1], 10);
+    }
+    
+    return null;
   }
 
   getCurrentTask(): Task | null {
     return this.currentTask;
+  }
+
+  getMode(): "sdk" | "cli" {
+    return this.client ? "sdk" : "cli";
   }
 }

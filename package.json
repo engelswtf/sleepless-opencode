@@ -1,6 +1,6 @@
 {
   "name": "sleepless-opencode",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "24/7 AI agent daemon for OpenCode - works while you sleep",
   "type": "module",
   "main": "dist/index.js",
@@ -14,7 +14,9 @@
     "start": "node dist/index.js",
     "mcp": "node dist/mcp-server.js",
     "cli": "tsx src/cli.ts",
-    "setup": "tsx src/setup.ts"
+    "setup": "tsx src/setup.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "opencode",
@@ -38,8 +40,9 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.10.5",
+    "@types/node": "^22.19.5",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.0.17"
   }
 }
