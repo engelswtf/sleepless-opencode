@@ -1,11 +1,54 @@
 import "dotenv/config";
+import { existsSync, writeFileSync, unlinkSync, readFileSync } from "fs";
+import { join } from "path";
 import { initDb, TaskQueue } from "./db.js";
 import { Daemon } from "./daemon.js";
 import { Notifier } from "./notifier.js";
 import { DiscordBot } from "./discord.js";
 import { SlackBot } from "./slack.js";
 
+const LOCK_FILE = join(process.cwd(), "data", ".daemon.lock");
+
+function acquireLock(): boolean {
+  try {
+    if (existsSync(LOCK_FILE)) {
+      const pidStr = readFileSync(LOCK_FILE, "utf-8").trim();
+      const pid = parseInt(pidStr, 10);
+      
+      // Check if process is still running
+      try {
+        process.kill(pid, 0); // Signal 0 just checks if process exists
+        console.error(`[main] Another daemon is already running (PID: ${pid})`);
+        console.error(`[main] If this is incorrect, delete ${LOCK_FILE}`);
+        return false;
+      } catch {
+        // Process not running, stale lock file
+        console.log(`[main] Removing stale lock file (PID ${pid} not running)`);
+      }
+    }
+    
+    writeFileSync(LOCK_FILE, process.pid.toString());
+    return true;
+  } catch (err) {
+    console.error("[main] Failed to acquire lock:", err);
+    return false;
+  }
+}
+
+function releaseLock(): void {
+  try {
+    if (existsSync(LOCK_FILE)) {
+      unlinkSync(LOCK_FILE);
+    }
+  } catch {
+    // Ignore errors during cleanup
+  }
+}
+
 async function main() {
+  if (!acquireLock()) {
+    process.exit(1);
+  }
   const db = initDb();
   const queue = new TaskQueue(db);
   const notifier = new Notifier();
@@ -54,6 +97,7 @@ async function main() {
     if (discordBot) await discordBot.stop();
     if (slackBot) await slackBot.stop();
     db.close();
+    releaseLock();
     process.exit(0);
   };
 
