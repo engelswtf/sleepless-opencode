@@ -5,6 +5,9 @@ import { homedir } from "os";
 import { TaskQueue, Task } from "./db.js";
 import { Notifier } from "./notifier.js";
 import { createOpencode, type OpencodeClient } from "@opencode-ai/sdk";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("daemon");
 
 interface AgentInfo {
   name: string;
@@ -265,7 +268,7 @@ export class Daemon {
       
       return hasContent;
     } catch (error) {
-      console.error("[daemon] Error validating session output:", error);
+      log.error("Error validating session output", { error: String(error) });
       return true;
     }
   }
@@ -326,10 +329,10 @@ export class Daemon {
         query: { directory: workDir },
       });
       
-      console.log(`[daemon] Recovered tool_result_missing for session ${sessionId}`);
+      log.info("Recovered tool_result_missing", { sessionId });
       return true;
     } catch (error) {
-      console.error("[daemon] Failed to recover tool_result_missing:", error);
+      log.error("Failed to recover tool_result_missing", { error: String(error) });
       return false;
     }
   }
@@ -339,7 +342,7 @@ export class Daemon {
     for (const [taskId, state] of this.taskStates.entries()) {
       const age = now - state.startedAt.getTime();
       if (age > DEFAULT_TASK_TIMEOUT_MS) {
-        console.log(`[daemon] Pruning stale task state for task #${taskId}`);
+        log.debug("Pruning stale task state", { taskId, ageMs: age });
         this.taskStates.delete(taskId);
         this.activeTasks.delete(taskId);
       }
@@ -386,13 +389,14 @@ export class Daemon {
 
   async start(): Promise<void> {
     this.running = true;
-    console.log("[daemon] Starting sleepless-opencode daemon...");
-    console.log(`[daemon] Workspace: ${this.config.workspacePath}`);
-    console.log(`[daemon] Poll interval: ${this.config.pollIntervalMs}ms`);
+    log.info("Starting sleepless-opencode daemon", {
+      workspace: this.config.workspacePath,
+      pollIntervalMs: this.config.pollIntervalMs,
+    });
 
     // Initialize OpenCode SDK server
     try {
-      console.log("[daemon] Initializing OpenCode SDK server...");
+      log.info("Initializing OpenCode SDK server");
       this.abortController = new AbortController();
       const opencode = await createOpencode({
         signal: this.abortController.signal,
@@ -400,15 +404,15 @@ export class Daemon {
       });
       this.client = opencode.client;
       this.server = opencode.server;
-      console.log(`[daemon] OpenCode SDK server started at ${this.server.url}`);
+      log.info("OpenCode SDK server started", { url: this.server.url });
     } catch (error) {
-      console.error("[daemon] Failed to initialize OpenCode SDK, falling back to CLI mode:", error);
+      log.error("Failed to initialize OpenCode SDK, falling back to CLI mode", { error: String(error) });
       this.startSdkReconnectChecker();
     }
 
     const stuckTask = this.queue.getRunning();
     if (stuckTask) {
-      console.log(`[daemon] Found task #${stuckTask.id} stuck in running state, resetting to pending`);
+      log.warn("Found task stuck in running state, resetting to pending", { taskId: stuckTask.id });
       this.queue.resetToPending(stuckTask.id);
     }
 
@@ -418,7 +422,7 @@ export class Daemon {
       try {
         await this.processNext();
       } catch (error) {
-        console.error("[daemon] Error processing task:", error);
+        log.error("Error processing task", { error: String(error) });
       }
 
       await this.sleep(this.config.pollIntervalMs);
@@ -433,7 +437,7 @@ export class Daemon {
       this.currentProcess.kill("SIGTERM");
     }
     if (this.server) {
-      console.log("[daemon] Shutting down OpenCode SDK server...");
+      log.info("Shutting down OpenCode SDK server");
       this.server.close();
       this.server = null;
       this.client = null;
@@ -442,7 +446,7 @@ export class Daemon {
       this.abortController.abort();
       this.abortController = null;
     }
-    console.log("[daemon] Stopping daemon...");
+    log.info("Daemon stopped");
   }
 
   async gracefulStop(timeoutMs = 60000): Promise<void> {
@@ -451,18 +455,18 @@ export class Daemon {
     this.running = false;
 
     if (!this.currentTask) {
-      console.log("[daemon] No task running, shutting down immediately");
+      log.info("No task running, shutting down immediately");
       this.stop();
       return;
     }
 
-    console.log(`[daemon] Graceful shutdown: waiting for task #${this.currentTask.id} to complete (max ${timeoutMs / 1000}s)...`);
+    log.info("Graceful shutdown initiated", { taskId: this.currentTask.id, timeoutSec: timeoutMs / 1000 });
 
     return new Promise<void>((resolve) => {
       this.shutdownResolve = resolve;
 
       const forceShutdown = setTimeout(() => {
-        console.log("[daemon] Graceful shutdown timeout, forcing stop...");
+        log.warn("Graceful shutdown timeout, forcing stop");
         this.stop();
         resolve();
       }, timeoutMs);
@@ -471,7 +475,7 @@ export class Daemon {
         if (!this.currentTask) {
           clearTimeout(forceShutdown);
           clearInterval(checkComplete);
-          console.log("[daemon] Task completed, shutting down");
+          log.info("Task completed, shutting down");
           this.stop();
           resolve();
         }
@@ -487,7 +491,7 @@ export class Daemon {
     this.timeoutChecker = setInterval(() => {
       this.checkTaskTimeout();
     }, TIMEOUT_CHECK_INTERVAL_MS);
-    console.log(`[daemon] Task timeout checker started (${DEFAULT_TASK_TIMEOUT_MS / 1000 / 60}min timeout)`);
+    log.debug("Task timeout checker started", { timeoutMin: DEFAULT_TASK_TIMEOUT_MS / 1000 / 60 });
   }
 
   private stopTimeoutChecker(): void {
@@ -503,7 +507,7 @@ export class Daemon {
     this.sdkReconnectChecker = setInterval(() => {
       this.tryReconnectSdk();
     }, SDK_RECONNECT_INTERVAL_MS);
-    console.log(`[daemon] SDK reconnect checker started (every ${SDK_RECONNECT_INTERVAL_MS / 1000}s)`);
+    log.debug("SDK reconnect checker started", { intervalSec: SDK_RECONNECT_INTERVAL_MS / 1000 });
   }
 
   private stopSdkReconnectChecker(): void {
@@ -517,7 +521,7 @@ export class Daemon {
     if (this.client || this.shuttingDown || this.currentTask) return;
 
     try {
-      console.log("[daemon] Attempting SDK reconnection...");
+      log.debug("Attempting SDK reconnection");
       this.abortController = new AbortController();
       const opencode = await createOpencode({
         signal: this.abortController.signal,
@@ -525,10 +529,10 @@ export class Daemon {
       });
       this.client = opencode.client;
       this.server = opencode.server;
-      console.log(`[daemon] SDK reconnected at ${this.server.url}`);
+      log.info("SDK reconnected", { url: this.server.url });
       this.stopSdkReconnectChecker();
     } catch (error) {
-      console.log("[daemon] SDK reconnection failed, will retry...");
+      log.debug("SDK reconnection failed, will retry");
     }
   }
 
@@ -540,7 +544,7 @@ export class Daemon {
 
     if (elapsed > timeoutMs) {
       const taskId = this.currentTask.id;
-      console.error(`[daemon] Task #${taskId} timed out after ${Math.round(elapsed / 1000 / 60)}min, killing...`);
+      log.error("Task timed out, killing", { taskId, elapsedMin: Math.round(elapsed / 1000 / 60) });
 
       if (this.currentProcess) {
         this.currentProcess.kill("SIGTERM");
@@ -588,7 +592,7 @@ export class Daemon {
 
     this.currentTask = task;
     this.taskStartTime = new Date();
-    console.log(`[daemon] Processing task #${task.id}: ${task.prompt.slice(0, 50)}...`);
+    log.info("Processing task", { taskId: task.id, prompt: task.prompt.slice(0, 50) });
 
     try {
       await this.notifier.notify({
@@ -608,7 +612,7 @@ export class Daemon {
         result,
       });
 
-      console.log(`[daemon] Task #${task.id} completed`);
+      log.info("Task completed", { taskId: task.id });
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       const errorType = this.detectErrorType(error);
@@ -618,11 +622,11 @@ export class Daemon {
       const sessionId = state?.sessionId || updatedTask.session_id;
       
       if (errorType === "tool_result_missing" && sessionId) {
-        console.log(`[daemon] Attempting to recover tool_result_missing for task #${task.id}`);
+        log.info("Attempting to recover tool_result_missing", { taskId: task.id });
         const workDir = task.project_path || this.config.workspacePath;
         const recovered = await this.recoverToolResultMissing(sessionId, workDir);
         if (recovered) {
-          console.log(`[daemon] Recovery successful, task will continue`);
+          log.info("Recovery successful, task will continue", { taskId: task.id });
           return;
         }
       }
@@ -633,7 +637,7 @@ export class Daemon {
       const serverRetryAfter = this.extractRetryAfterHeader(error);
       if (serverRetryAfter && errorType === "rate_limit") {
         retryDelay = serverRetryAfter + Math.random() * 10;
-        console.log(`[daemon] Using server-provided retry-after: ${serverRetryAfter}s`);
+        log.debug("Using server-provided retry-after", { retryAfterSec: serverRetryAfter });
       } else {
         retryDelay = this.calculateRetryDelay(updatedTask.retry_count, errorType);
       }
@@ -643,7 +647,13 @@ export class Daemon {
       const errorDetails = `[${errorType}] ${errorMsg}`;
       
       if (canRetry) {
-        console.log(`[daemon] Task #${task.id} failed (${errorType}), scheduling retry ${updatedTask.retry_count + 1}/${updatedTask.max_retries} in ${Math.ceil(retryDelay)}s`);
+        log.warn("Task failed, scheduling retry", {
+          taskId: task.id,
+          errorType,
+          retry: updatedTask.retry_count + 1,
+          maxRetries: updatedTask.max_retries,
+          retryDelaySec: Math.ceil(retryDelay),
+        });
         await this.notifier.notify({
           type: "failed",
           task: this.queue.get(task.id)!,
@@ -655,11 +665,16 @@ export class Daemon {
         
         const dependentTasks = this.queue.getDependentTasks(task.id);
         if (dependentTasks.length > 0) {
-          console.log(`[daemon] Failing ${dependentTasks.length} dependent tasks due to task #${task.id} failure`);
+          log.warn("Failing dependent tasks", { taskId: task.id, dependentCount: dependentTasks.length });
           this.queue.failDependentTasks(task.id, `Dependency task #${task.id} failed`);
         }
         
-        console.error(`[daemon] Task #${task.id} failed permanently (${errorType}) after ${updatedTask.retry_count} retries:`, errorMsg);
+        log.error("Task failed permanently", {
+          taskId: task.id,
+          errorType,
+          retryCount: updatedTask.retry_count,
+          error: errorMsg,
+        });
         await this.notifier.notify({
           type: "failed",
           task: this.queue.get(task.id)!,
@@ -688,11 +703,11 @@ export class Daemon {
       const iteration = this.queue.incrementIteration(task.id);
       
       if (iteration > maxIterations) {
-        console.log(`[daemon] Task #${task.id} hit max iterations (${maxIterations})`);
+        log.warn("Task hit max iterations", { taskId: task.id, maxIterations });
         return `Max iterations reached. Last output:\n${lastOutput}`;
       }
 
-      console.log(`[daemon] Task #${task.id} iteration ${iteration}/${maxIterations}`);
+      log.debug("Task iteration", { taskId: task.id, iteration, maxIterations });
 
       const prompt = isFirstIteration 
         ? this.buildInitialPrompt(task.prompt)
@@ -709,12 +724,12 @@ export class Daemon {
       }
 
       if (result.isComplete) {
-        console.log(`[daemon] Task #${task.id} signaled completion at iteration ${iteration}`);
+        log.debug("Task signaled completion", { taskId: task.id, iteration });
         return result.output;
       }
 
       if (!result.needsContinuation) {
-        console.log(`[daemon] Task #${task.id} appears done (no continuation needed)`);
+        log.debug("Task appears done (no continuation needed)", { taskId: task.id });
         return result.output;
       }
 
@@ -810,7 +825,7 @@ IMPORTANT INSTRUCTIONS:
         throw new Error(`Failed to create session: ${JSON.stringify(createResult.error)}`);
       }
       currentSessionId = createResult.data.id;
-      console.log(`[daemon] Created session ${currentSessionId} for task #${task.id}`);
+      log.info("Created session", { sessionId: currentSessionId, taskId: task.id });
       
       this.taskStates.set(task.id, {
         sessionId: currentSessionId,
@@ -865,19 +880,19 @@ IMPORTANT INSTRUCTIONS:
       
       if (sessionStatus?.type === "idle") {
         if (elapsedMs < MIN_IDLE_TIME_MS) {
-          console.log(`[daemon] Ignoring early session.idle, elapsed: ${elapsedMs}ms`);
+          log.debug("Ignoring early session.idle", { elapsedMs });
           continue;
         }
         
         const hasValidOutput = await this.validateSessionHasOutput(currentSessionId, workDir);
         if (!hasValidOutput) {
-          console.log(`[daemon] Session idle but no valid output yet, waiting...`);
+          log.debug("Session idle but no valid output yet, waiting");
           continue;
         }
         
         const hasIncompleteTodos = await this.hasIncompleteTodos(currentSessionId);
         if (hasIncompleteTodos) {
-          console.log(`[daemon] Session idle but has incomplete todos, needs continuation`);
+          log.debug("Session idle but has incomplete todos, needs continuation");
           const messagesResult = await client.session.messages({
             path: { id: currentSessionId },
             query: { directory: workDir },
@@ -930,13 +945,13 @@ IMPORTANT INSTRUCTIONS:
           if (state.stablePolls >= STABLE_POLLS_REQUIRED) {
             const hasValidOutput = await this.validateSessionHasOutput(currentSessionId, workDir);
             if (!hasValidOutput) {
-              console.log(`[daemon] Stability reached but no valid output, waiting...`);
+              log.debug("Stability reached but no valid output, waiting");
               continue;
             }
             
             const hasIncompleteTodos = await this.hasIncompleteTodos(currentSessionId);
             if (hasIncompleteTodos) {
-              console.log(`[daemon] Stability reached but has incomplete todos, needs continuation`);
+              log.debug("Stability reached but has incomplete todos, needs continuation");
               const output = this.extractOutputFromMessages(messages);
               return {
                 output,
@@ -949,7 +964,7 @@ IMPORTANT INSTRUCTIONS:
             const output = this.extractOutputFromMessages(messages);
             const isComplete = this.detectCompletion(output);
             
-            console.log(`[daemon] Session ${currentSessionId} stable after ${state.stablePolls} polls`);
+            log.debug("Session stable", { sessionId: currentSessionId, stablePolls: state.stablePolls });
             return {
               output,
               sessionId: currentSessionId,

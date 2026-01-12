@@ -1,5 +1,8 @@
 import { Task } from "./db.js";
 import { WebhookNotifier, WebhookConfig } from "./webhook.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("notifier");
 
 export interface Notification {
   type: "started" | "completed" | "failed";
@@ -28,7 +31,7 @@ export class Notifier {
   async notify(notification: Notification): Promise<void> {
     const channelPromises = this.channels.map((channel) =>
       channel.send(notification).catch((err) => {
-        console.error("[notifier] Failed to send notification:", err);
+        log.error("Failed to send notification", { error: String(err) });
       })
     );
 
@@ -39,7 +42,7 @@ export class Notifier {
         notification.result,
         notification.error
       ).catch((err) => {
-        console.error("[notifier] Webhook failed:", err);
+        log.error("Webhook failed", { error: String(err) });
       })
     );
 

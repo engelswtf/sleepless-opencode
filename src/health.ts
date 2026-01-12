@@ -1,6 +1,9 @@
 import { createServer, IncomingMessage, ServerResponse, Server } from "http";
 import { TaskQueue } from "./db.js";
 import { Daemon } from "./daemon.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("health");
 
 export interface HealthStatus {
   status: "healthy" | "degraded" | "unhealthy";
@@ -41,7 +44,7 @@ export class HealthServer {
       
       this.server.on("error", (err: NodeJS.ErrnoException) => {
         if (err.code === "EADDRINUSE") {
-          console.log(`[health] Port ${port} in use, health server disabled`);
+          log.warn("Port in use, health server disabled", { port });
           resolve();
         } else {
           reject(err);
@@ -49,7 +52,7 @@ export class HealthServer {
       });
 
       this.server.listen(port, () => {
-        console.log(`[health] Health server listening on http://localhost:${port}`);
+        log.info("Health server listening", { url: `http://localhost:${port}` });
         resolve();
       });
     });

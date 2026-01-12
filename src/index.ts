@@ -7,6 +7,9 @@ import { Notifier } from "./notifier.js";
 import { DiscordBot } from "./discord.js";
 import { SlackBot } from "./slack.js";
 import { HealthServer } from "./health.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("main");
 
 const VERSION = "1.0.0";
 
@@ -21,19 +24,18 @@ function acquireLock(): boolean {
       // Check if process is still running
       try {
         process.kill(pid, 0); // Signal 0 just checks if process exists
-        console.error(`[main] Another daemon is already running (PID: ${pid})`);
-        console.error(`[main] If this is incorrect, delete ${LOCK_FILE}`);
+        log.error("Another daemon is already running", { pid, lockFile: LOCK_FILE });
         return false;
       } catch {
         // Process not running, stale lock file
-        console.log(`[main] Removing stale lock file (PID ${pid} not running)`);
+        log.warn("Removing stale lock file", { pid });
       }
     }
     
     writeFileSync(LOCK_FILE, process.pid.toString());
     return true;
   } catch (err) {
-    console.error("[main] Failed to acquire lock:", err);
+    log.error("Failed to acquire lock", { error: String(err) });
     return false;
   }
 }
@@ -68,7 +70,7 @@ async function main() {
       allowedChannelIds: process.env.DISCORD_ALLOWED_CHANNEL_IDS?.split(",").filter(Boolean),
     });
     notifier.addChannel(discordBot);
-    console.log("[main] Discord bot configured");
+    log.info("Discord bot configured");
   }
 
   if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
@@ -78,7 +80,7 @@ async function main() {
       notifyChannel: process.env.SLACK_NOTIFICATION_CHANNEL,
     });
     notifier.addChannel(slackBot);
-    console.log("[main] Slack bot configured");
+    log.info("Slack bot configured");
   }
 
   if (process.env.WEBHOOK_URL) {
@@ -88,11 +90,11 @@ async function main() {
       secret: process.env.WEBHOOK_SECRET,
       events: webhookEvents,
     });
-    console.log("[main] Webhook configured");
+    log.info("Webhook configured");
   }
 
   if (!discordBot && !slackBot && !process.env.WEBHOOK_URL) {
-    console.error("[main] ERROR: No notification channel configured. Set DISCORD_BOT_TOKEN, SLACK_BOT_TOKEN/SLACK_APP_TOKEN, or WEBHOOK_URL");
+    log.error("No notification channel configured. Set DISCORD_BOT_TOKEN, SLACK_BOT_TOKEN/SLACK_APP_TOKEN, or WEBHOOK_URL");
     process.exit(1);
   }
 
@@ -114,12 +116,12 @@ async function main() {
 
   const gracefulShutdown = async (signal: string) => {
     if (isShuttingDown) {
-      console.log(`\n[main] Already shutting down, please wait...`);
+      log.warn("Already shutting down, please wait");
       return;
     }
     isShuttingDown = true;
 
-    console.log(`\n[main] Received ${signal}, starting graceful shutdown...`);
+    log.info("Received signal, starting graceful shutdown", { signal });
     
     const shutdownTimeout = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || "60000", 10);
     await daemon.gracefulStop(shutdownTimeout);
@@ -129,12 +131,12 @@ async function main() {
     if (slackBot) await slackBot.stop();
     db.close();
     releaseLock();
-    console.log("[main] Shutdown complete");
+    log.info("Shutdown complete");
     process.exit(0);
   };
 
   const forceShutdown = () => {
-    console.log("\n[main] Force shutdown requested");
+    log.warn("Force shutdown requested");
     daemon.stop();
     healthServer.stop();
     if (discordBot) discordBot.stop();
@@ -155,6 +157,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[main] Fatal error:", err);
+  log.error("Fatal error", { error: String(err) });
   process.exit(1);
 });

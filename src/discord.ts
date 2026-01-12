@@ -12,6 +12,9 @@ import {
 import { TaskQueue, TaskPriority } from "./db.js";
 import { Notification, NotificationChannel } from "./notifier.js";
 import { validatePrompt, validateProjectPath } from "./validation.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("discord");
 
 export interface DiscordConfig {
   token: string;
@@ -39,7 +42,7 @@ export class DiscordBot implements NotificationChannel {
     await this.registerCommands();
 
     this.client.on("ready", () => {
-      console.log(`[discord] Bot logged in as ${this.client.user?.tag}`);
+      log.info("Bot logged in", { tag: this.client.user?.tag });
       this.ready = true;
     });
 
@@ -113,7 +116,7 @@ export class DiscordBot implements NotificationChannel {
       body: commands.map((c) => c.toJSON()),
     });
 
-    console.log("[discord] Slash commands registered");
+    log.info("Slash commands registered");
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -141,7 +144,7 @@ export class DiscordBot implements NotificationChannel {
           break;
       }
     } catch (error) {
-      console.error("[discord] Command error:", error);
+      log.error("Command error", { command: interaction.commandName, error: String(error) });
       const msg = error instanceof Error ? error.message : "Unknown error";
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp({ content: `Error: ${msg}`, ephemeral: true });
@@ -326,7 +329,7 @@ export class DiscordBot implements NotificationChannel {
         const user = await this.client.users.fetch(this.config.notifyUserId);
         await user.send({ embeds: [embed] });
       } catch (err) {
-        console.error("[discord] Failed to DM user:", err);
+        log.error("Failed to DM user", { userId: this.config.notifyUserId, error: String(err) });
       }
     }
 
@@ -337,7 +340,7 @@ export class DiscordBot implements NotificationChannel {
           await (channel as TextChannel).send({ embeds: [embed] });
         }
       } catch (err) {
-        console.error("[discord] Failed to send to channel:", err);
+        log.error("Failed to send to channel", { channelId: this.config.notifyChannelId, error: String(err) });
       }
     }
   }

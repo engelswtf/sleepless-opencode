@@ -1,4 +1,7 @@
 import { Task } from "./db.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("webhook");
 
 export interface WebhookConfig {
   url: string;
@@ -78,10 +81,10 @@ export class WebhookNotifier {
       });
 
       if (!response.ok) {
-        console.error(`[webhook] HTTP ${response.status}: ${await response.text()}`);
+        log.error("HTTP error", { status: response.status, body: await response.text() });
       }
     } catch (err) {
-      console.error(`[webhook] Failed to send notification:`, err);
+      log.error("Failed to send notification", { error: String(err) });
     }
   }
 

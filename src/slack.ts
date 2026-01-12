@@ -2,6 +2,9 @@ import { App } from "@slack/bolt";
 import { TaskQueue, TaskPriority } from "./db.js";
 import { Notification, NotificationChannel } from "./notifier.js";
 import { validatePrompt } from "./validation.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("slack");
 
 export interface SlackConfig {
   botToken: string;
@@ -129,7 +132,7 @@ export class SlackBot implements NotificationChannel {
 
   async start(): Promise<void> {
     await this.app.start();
-    console.log("[slack] Bot started");
+    log.info("Bot started");
   }
 
   async stop(): Promise<void> {
@@ -162,7 +165,7 @@ export class SlackBot implements NotificationChannel {
         text,
       });
     } catch (err) {
-      console.error("[slack] Failed to send notification:", err);
+      log.error("Failed to send notification", { channel: this.config.notifyChannel, error: String(err) });
     }
   }
 }
