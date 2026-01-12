@@ -122,13 +122,15 @@ export class DiscordBot implements NotificationChannel {
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!this.isAllowed(interaction)) {
       await interaction.reply({ 
-        content: "❌ You don't have permission to use this bot.", 
-        ephemeral: true 
+        content: "You don't have permission to use this bot.", 
+        flags: 64 
       });
       return;
     }
 
     try {
+      await interaction.deferReply();
+      
       switch (interaction.commandName) {
         case "task":
           await this.handleTask(interaction);
@@ -145,11 +147,11 @@ export class DiscordBot implements NotificationChannel {
       }
     } catch (error) {
       log.error("Command error", { command: interaction.commandName, error: String(error) });
-      const msg = error instanceof Error ? error.message : "Unknown error";
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({ content: `Error: ${msg}`, ephemeral: true });
-      } else {
-        await interaction.reply({ content: `Error: ${msg}`, ephemeral: true });
+      try {
+        const msg = error instanceof Error ? error.message : "Unknown error";
+        await interaction.editReply({ content: `Error: ${msg}` });
+      } catch {
+        log.debug("Failed to send error response, interaction likely expired");
       }
     }
   }
@@ -179,30 +181,24 @@ export class DiscordBot implements NotificationChannel {
 
     const promptValidation = validatePrompt(prompt);
     if (!promptValidation.valid) {
-      await interaction.reply({ content: `❌ ${promptValidation.error}`, ephemeral: true });
+      await interaction.editReply({ content: promptValidation.error });
       return;
     }
 
     const pathValidation = validateProjectPath(project);
     if (!pathValidation.valid) {
-      await interaction.reply({ content: `❌ ${pathValidation.error}`, ephemeral: true });
+      await interaction.editReply({ content: pathValidation.error });
       return;
     }
 
-    const recentTasks = this.queue.list(undefined, 5);
+    const recentTasks = this.queue.list(undefined, 10);
     const isDuplicate = recentTasks.some(
       (t) => t.prompt === prompt && 
-             t.status !== "done" && 
-             t.status !== "failed" &&
-             t.status !== "cancelled" &&
-             Date.now() - new Date(t.created_at).getTime() < 60000
+             Date.now() - new Date(t.created_at).getTime() < 30000
     );
 
     if (isDuplicate) {
-      await interaction.reply({ 
-        content: "This task was already submitted. Check /status for progress.", 
-        ephemeral: true 
-      });
+      await interaction.editReply({ content: "This task was already submitted. Check /status for progress." });
       return;
     }
 
@@ -224,7 +220,7 @@ export class DiscordBot implements NotificationChannel {
       )
       .setTimestamp();
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
   }
 
   private async handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -249,7 +245,7 @@ export class DiscordBot implements NotificationChannel {
       });
     }
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
   }
 
   private async handleTasks(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -259,7 +255,7 @@ export class DiscordBot implements NotificationChannel {
       : this.queue.list(filter as any, 10);
 
     if (tasks.length === 0) {
-      await interaction.reply({ content: "No tasks found.", ephemeral: true });
+      await interaction.editReply({ content: "No tasks found." });
       return;
     }
 
@@ -281,7 +277,7 @@ export class DiscordBot implements NotificationChannel {
       .setColor(0x0099ff)
       .setTimestamp();
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
   }
 
   private async handleCancel(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -289,12 +285,9 @@ export class DiscordBot implements NotificationChannel {
     const success = this.queue.cancel(id);
 
     if (success) {
-      await interaction.reply({ content: `Task #${id} cancelled.` });
+      await interaction.editReply({ content: `Task #${id} cancelled.` });
     } else {
-      await interaction.reply({
-        content: `Could not cancel task #${id}. It may not be pending.`,
-        ephemeral: true,
-      });
+      await interaction.editReply({ content: `Could not cancel task #${id}. It may not be pending.` });
     }
   }
 

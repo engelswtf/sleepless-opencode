@@ -43,7 +43,15 @@ export interface TaskCreate {
   depends_on?: number;
 }
 
-const DATA_DIR = process.env.SLEEPLESS_DATA_DIR || join(process.cwd(), "data");
+function getDataDir(): string {
+  if (process.env.SLEEPLESS_DATA_DIR) {
+    return process.env.SLEEPLESS_DATA_DIR;
+  }
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "/tmp";
+  return join(homeDir, ".sleepless-opencode");
+}
+
+const DATA_DIR = getDataDir();
 
 export function initDb(): Database.Database {
   if (!existsSync(DATA_DIR)) {
