@@ -158,6 +158,23 @@ export class DiscordBot implements NotificationChannel {
       return;
     }
 
+    const recentTasks = this.queue.list(undefined, 5);
+    const isDuplicate = recentTasks.some(
+      (t) => t.prompt === prompt && 
+             t.status !== "done" && 
+             t.status !== "failed" &&
+             t.status !== "cancelled" &&
+             Date.now() - new Date(t.created_at).getTime() < 60000
+    );
+
+    if (isDuplicate) {
+      await interaction.reply({ 
+        content: "This task was already submitted. Check /status for progress.", 
+        ephemeral: true 
+      });
+      return;
+    }
+
     const task = this.queue.create({
       prompt,
       project_path: project,

@@ -3,7 +3,7 @@ import { join } from "path";
 import { existsSync, mkdirSync } from "fs";
 
 export type TaskStatus = "pending" | "running" | "done" | "failed" | "cancelled";
-export type TaskPriority = "low" | "medium" | "high";
+export type TaskPriority = "low" | "medium" | "high" | "urgent";
 
 export interface Task {
   id: number;
@@ -94,12 +94,12 @@ export class TaskQueue {
   }
 
   getNext(): Task | undefined {
-    // Get highest priority pending task (high > medium > low)
     return this.db.prepare(`
       SELECT * FROM tasks 
       WHERE status = 'pending'
       ORDER BY 
         CASE priority 
+          WHEN 'urgent' THEN 0
           WHEN 'high' THEN 1 
           WHEN 'medium' THEN 2 
           WHEN 'low' THEN 3 
@@ -142,6 +142,12 @@ export class TaskQueue {
       UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'pending'
     `).run(id);
     return result.changes > 0;
+  }
+
+  resetToPending(id: number): void {
+    this.db.prepare(`
+      UPDATE tasks SET status = 'pending', started_at = NULL, session_id = NULL WHERE id = ?
+    `).run(id);
   }
 
   list(status?: TaskStatus, limit = 10): Task[] {

@@ -1,12 +1,13 @@
-import { createOpencode } from "@opencode-ai/sdk";
+import { spawn, ChildProcess } from "child_process";
 import { TaskQueue, Task } from "./db.js";
 import { Notifier } from "./notifier.js";
 
 export interface DaemonConfig {
   pollIntervalMs: number;
   workspacePath: string;
-  opencodePort?: number;
   taskTimeoutMs?: number;
+  model?: string;
+  opencodePath?: string;
 }
 
 export class Daemon {
@@ -15,6 +16,7 @@ export class Daemon {
   private config: DaemonConfig;
   private running = false;
   private currentTask: Task | null = null;
+  private currentProcess: ChildProcess | null = null;
 
   constructor(queue: TaskQueue, notifier: Notifier, config: DaemonConfig) {
     this.queue = queue;
@@ -27,6 +29,12 @@ export class Daemon {
     console.log("[daemon] Starting sleepless-opencode daemon...");
     console.log(`[daemon] Workspace: ${this.config.workspacePath}`);
     console.log(`[daemon] Poll interval: ${this.config.pollIntervalMs}ms`);
+
+    const stuckTask = this.queue.getRunning();
+    if (stuckTask) {
+      console.log(`[daemon] Found task #${stuckTask.id} stuck in running state, resetting to pending`);
+      this.queue.resetToPending(stuckTask.id);
+    }
 
     while (this.running) {
       try {
@@ -41,6 +49,9 @@ export class Daemon {
 
   stop(): void {
     this.running = false;
+    if (this.currentProcess) {
+      this.currentProcess.kill("SIGTERM");
+    }
     console.log("[daemon] Stopping daemon...");
   }
 
@@ -91,66 +102,123 @@ export class Daemon {
       console.error(`[daemon] Task #${task.id} failed:`, errorMsg);
     } finally {
       this.currentTask = null;
+      this.currentProcess = null;
     }
   }
 
   private async runTask(task: Task): Promise<string> {
     const workDir = task.project_path || this.config.workspacePath;
     const timeoutMs = this.config.taskTimeoutMs || 30 * 60 * 1000;
+    const opencodeBin = this.config.opencodePath || process.env.OPENCODE_PATH || "/root/.opencode/bin/opencode";
 
-    const { client, server } = await createOpencode({
-      port: this.config.opencodePort,
-      config: {},
-    });
+    const args = [
+      "run",
+      "--format", "json",
+      "--title", `Sleepless Task #${task.id}`,
+    ];
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Task timed out after ${timeoutMs / 1000}s`)), timeoutMs);
-    });
+    if (this.config.model) {
+      args.push("--model", this.config.model);
+    }
 
-    try {
-      const session = await client.session.create({
-        body: { title: `Sleepless Task #${task.id}` },
-      });
+    args.push("--", task.prompt);
 
-      if (!session.data?.id) {
-        throw new Error("Failed to create OpenCode session");
-      }
+    return new Promise((resolve, reject) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
 
-      this.queue.setRunning(task.id, session.data.id);
+      this.queue.setRunning(task.id, `cli-${Date.now()}`);
 
-      await client.session.prompt({
-        path: { id: session.data.id },
-        body: {
-          parts: [{ type: "text", text: task.prompt }],
+      const proc = spawn(opencodeBin, args, {
+        cwd: workDir,
+        env: {
+          ...process.env,
+          CI: "true",
+          OPENCODE_NONINTERACTIVE: "1",
         },
+        stdio: ["pipe", "pipe", "pipe"],
       });
 
-      const taskPromise = (async () => {
-        const events = await client.event.subscribe();
-        for await (const event of events.stream) {
-          if (event.type === "session.idle" || event.type === "session.error") {
-            break;
-          }
+      this.currentProcess = proc;
+
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => proc.kill("SIGKILL"), 5000);
+      }, timeoutMs);
+
+      proc.stdout?.on("data", (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr?.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        clearTimeout(timeout);
+        this.currentProcess = null;
+
+        if (timedOut) {
+          reject(new Error(`Task timed out after ${timeoutMs / 1000}s`));
+          return;
         }
 
-        const messages = await client.session.messages({
-          path: { id: session.data!.id },
-        });
+        if (code !== 0 && code !== null) {
+          reject(new Error(`OpenCode exited with code ${code}: ${stderr || stdout}`));
+          return;
+        }
 
-        const lastAssistantMessage = messages.data
-          ?.filter((m: any) => m.info.role === "assistant")
-          .pop();
+        const result = this.parseOpenCodeOutput(stdout);
+        resolve(result);
+      });
 
-        return lastAssistantMessage?.parts
-          ?.filter((p: any) => p.type === "text")
-          .map((p: any) => p.text)
-          .join("\n") || "Task completed";
-      })();
+      proc.on("error", (err) => {
+        clearTimeout(timeout);
+        this.currentProcess = null;
+        reject(new Error(`Failed to spawn OpenCode: ${err.message}`));
+      });
 
-      return await Promise.race([taskPromise, timeoutPromise]);
-    } finally {
-      server.close();
+      proc.stdin?.end();
+    });
+  }
+
+  private parseOpenCodeOutput(output: string): string {
+    const lines = output.trim().split("\n").filter(Boolean);
+    const textParts: string[] = [];
+
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line);
+        if (event.type === "text" && event.part?.text) {
+          textParts.push(event.part.text);
+        }
+        if (event.type === "part" && event.part?.type === "text" && event.part?.text) {
+          textParts.push(event.part.text);
+        }
+        if (event.type === "message" && event.message?.role === "assistant") {
+          const parts = event.message.parts || [];
+          for (const part of parts) {
+            if (part.type === "text" && part.text) {
+              textParts.push(part.text);
+            }
+          }
+        }
+      } catch {
+        continue;
+      }
     }
+
+    if (textParts.length > 0) {
+      return textParts[textParts.length - 1];
+    }
+
+    if (output.trim()) {
+      return output.trim().slice(0, 4000);
+    }
+
+    return "Task completed (no output captured)";
   }
 
   private sleep(ms: number): Promise<void> {

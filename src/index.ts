@@ -41,8 +41,9 @@ async function main() {
   const daemon = new Daemon(queue, notifier, {
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS || "5000", 10),
     workspacePath: process.env.OPENCODE_WORKSPACE || process.cwd(),
-    opencodePort: process.env.OPENCODE_PORT ? parseInt(process.env.OPENCODE_PORT, 10) : undefined,
+    opencodePath: process.env.OPENCODE_PATH,
     taskTimeoutMs: process.env.TASK_TIMEOUT_MS ? parseInt(process.env.TASK_TIMEOUT_MS, 10) : 30 * 60 * 1000,
+    model: process.env.OPENCODE_MODEL,
   });
 
   const shutdown = async () => {
