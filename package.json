@@ -1,6 +1,6 @@
 {
   "name": "sleepless-opencode",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "24/7 AI agent daemon for OpenCode - works while you sleep",
   "type": "module",
   "main": "dist/index.js",

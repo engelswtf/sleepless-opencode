@@ -34,14 +34,21 @@ This will guide you through:
 
 ## Features
 
-- **Task Queue**: SQLite-backed persistent queue with priorities
+- **Persistent Task Queue**: SQLite-backed queue survives restarts
+- **Priority System**: urgent/high/medium/low priority ordering
 - **Discord Bot**: Slash commands to submit and manage tasks
 - **Slack Bot**: Alternative interface (optional)
-- **Notifications**: DM or channel notifications when tasks complete
+- **Access Control**: Restrict bot to specific users or channels
+- **Smart Completion Detection**: Validates actual output before marking complete
+- **Todo-Aware**: Checks for incomplete todos before finishing tasks
+- **Error Recovery**: Automatic recovery from tool_result_missing errors
+- **Error Categorization**: Detects rate limits, context exceeded, agent not found
+- **Progress Tracking**: Tracks tool calls, last tool, last message
+- **Retry with Backoff**: Exponential backoff for transient failures
+- **Task Timeout**: Configurable timeout prevents stuck tasks (30 min default)
 - **CLI**: Command-line interface for quick task management
+- **MCP Server**: Expose tools so agents can queue tasks
 - **Systemd Service**: Run as a background service
-- **Input Validation**: Protection against malformed inputs
-- **Task Timeout**: Configurable timeout prevents stuck tasks
 
 ## Usage
 
@@ -119,8 +126,50 @@ npx sleepless cancel 1
 1. Submit tasks via Discord, Slack, or CLI
 2. Tasks are stored in SQLite with priority ordering
 3. Daemon polls queue, picks highest priority pending task
-4. Creates an OpenCode session and runs the task
-5. Sends notification when complete (or failed)
+4. Creates an OpenCode session (SDK or CLI fallback)
+5. Monitors session with smart completion detection:
+   - Validates actual output exists
+   - Checks for incomplete todos
+   - Uses stability detection (3 consecutive stable polls)
+   - Respects minimum idle time (5s)
+6. Sends notification when complete (or failed)
+
+## Completion Detection
+
+The daemon uses multiple layers to detect task completion:
+
+| Check | Purpose |
+|-------|---------|
+| `session.idle` event | Primary completion signal |
+| Output validation | Ensures actual assistant/tool output exists |
+| Todo check | Waits if todos are incomplete |
+| Stability detection | 3 consecutive polls with unchanged messages |
+| Minimum idle time | Ignores premature idle events (<5s) |
+| Completion signals | Looks for `[TASK_COMPLETE]` in output |
+
+## Error Handling
+
+Errors are categorized for smarter retry logic:
+
+| Error Type | Behavior |
+|------------|----------|
+| `rate_limit` | Retry with exponential backoff |
+| `context_exceeded` | No retry (task too large) |
+| `agent_not_found` | No retry (configuration issue) |
+| `tool_result_missing` | Attempt recovery, then retry |
+| `timeout` | Retry with backoff |
+| `unknown` | Retry with backoff |
+
+## Progress Tracking
+
+Tasks track execution progress:
+
+```sql
+progress_tool_calls   -- Number of tool calls made
+progress_last_tool    -- Name of last tool used  
+progress_last_message -- Last assistant message (truncated)
+progress_updated_at   -- Timestamp of last update
+```
 
 ## Run as a Service
 
@@ -183,12 +232,33 @@ launchctl load ~/Library/LaunchAgents/com.sleepless-opencode.plist
 | `SLACK_APP_TOKEN` | With Slack | - | Slack app token (socket mode) |
 | `DISCORD_NOTIFICATION_USER_ID` | No | - | User ID for DM notifications |
 | `DISCORD_NOTIFICATION_CHANNEL_ID` | No | - | Channel for notifications |
+| `DISCORD_ALLOWED_USER_IDS` | No | - | Comma-separated user IDs allowed to use bot |
+| `DISCORD_ALLOWED_CHANNEL_IDS` | No | - | Comma-separated channel IDs where bot responds |
 | `SLACK_NOTIFICATION_CHANNEL` | No | - | Slack channel name |
 | `OPENCODE_WORKSPACE` | No | `cwd` | Default workspace path |
-| `OPENCODE_PORT` | No | - | OpenCode server port |
+| `OPENCODE_AGENT` | No | `sleepless-executor` | Agent to use for tasks |
 | `POLL_INTERVAL_MS` | No | `5000` | Poll interval in ms |
 | `TASK_TIMEOUT_MS` | No | `1800000` | Task timeout (30 min) |
+| `ITERATION_TIMEOUT_MS` | No | `600000` | Single iteration timeout (10 min) |
 | `SLEEPLESS_DATA_DIR` | No | `./data` | Data directory |
+
+### Access Control
+
+Restrict who can use the Discord bot:
+
+```env
+# Allow specific users only
+DISCORD_ALLOWED_USER_IDS=123456789,987654321
+
+# Allow specific channels only
+DISCORD_ALLOWED_CHANNEL_IDS=111222333,444555666
+
+# Allow both (user OR channel must match)
+DISCORD_ALLOWED_USER_IDS=123456789
+DISCORD_ALLOWED_CHANNEL_IDS=111222333
+```
+
+If neither is set, the bot is open to everyone who can see it.
 
 ## Discord Bot Setup
 
@@ -218,6 +288,30 @@ launchctl load ~/Library/LaunchAgents/com.sleepless-opencode.plist
    - `/cancel` - Cancel task
 6. Install to Workspace, copy Bot Token (`xoxb-...`)
 
+## MCP Server
+
+The daemon includes an MCP server that exposes tools for agents:
+
+| Tool | Description |
+|------|-------------|
+| `sleepless_queue` | Queue a task for background processing |
+| `sleepless_status` | Check queue status or specific task |
+| `sleepless_list` | List queued tasks |
+| `sleepless_cancel` | Cancel a pending task |
+| `sleepless_result` | Get full result of a completed task |
+
+Add to your `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "sleepless": {
+      "command": ["node", "/path/to/sleepless-opencode/dist/mcp-server.js"]
+    }
+  }
+}
+```
+
 ## Security
 
 - Input validation on all prompts and paths
@@ -225,6 +319,8 @@ launchctl load ~/Library/LaunchAgents/com.sleepless-opencode.plist
 - WAL mode for SQLite concurrency
 - Project path restrictions (no system paths)
 - Task timeouts prevent infinite loops
+- Access control for Discord bot
+- Lock file prevents duplicate daemon instances
 
 ## License
 

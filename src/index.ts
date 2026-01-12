@@ -61,6 +61,8 @@ async function main() {
       token: process.env.DISCORD_BOT_TOKEN,
       notifyUserId: process.env.DISCORD_NOTIFICATION_USER_ID,
       notifyChannelId: process.env.DISCORD_NOTIFICATION_CHANNEL_ID,
+      allowedUserIds: process.env.DISCORD_ALLOWED_USER_IDS?.split(",").filter(Boolean),
+      allowedChannelIds: process.env.DISCORD_ALLOWED_CHANNEL_IDS?.split(",").filter(Boolean),
     });
     notifier.addChannel(discordBot);
     console.log("[main] Discord bot configured");

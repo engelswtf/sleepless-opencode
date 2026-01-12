@@ -13,6 +13,7 @@ export interface Task {
   priority: TaskPriority;
   result: string | null;
   error: string | null;
+  error_type: string | null;
   session_id: string | null;
   iteration: number;
   max_iterations: number;
@@ -24,6 +25,10 @@ export interface Task {
   completed_at: string | null;
   created_by: string | null;
   source: "discord" | "slack" | "cli";
+  progress_tool_calls: number;
+  progress_last_tool: string | null;
+  progress_last_message: string | null;
+  progress_updated_at: string | null;
 }
 
 export interface TaskCreate {
@@ -81,6 +86,11 @@ export function initDb(): Database.Database {
     `ALTER TABLE tasks ADD COLUMN retry_count INTEGER DEFAULT 0`,
     `ALTER TABLE tasks ADD COLUMN max_retries INTEGER DEFAULT 3`,
     `ALTER TABLE tasks ADD COLUMN retry_after TEXT`,
+    `ALTER TABLE tasks ADD COLUMN error_type TEXT`,
+    `ALTER TABLE tasks ADD COLUMN progress_tool_calls INTEGER DEFAULT 0`,
+    `ALTER TABLE tasks ADD COLUMN progress_last_tool TEXT`,
+    `ALTER TABLE tasks ADD COLUMN progress_last_message TEXT`,
+    `ALTER TABLE tasks ADD COLUMN progress_updated_at TEXT`,
   ];
   
   for (const sql of migrations) {
@@ -158,6 +168,22 @@ export class TaskQueue {
     this.db.prepare(`UPDATE tasks SET session_id = ? WHERE id = ?`).run(sessionId, id);
   }
 
+  updateProgress(id: number, progress: { toolCalls: number; lastTool?: string; lastMessage?: string }): void {
+    this.db.prepare(`
+      UPDATE tasks 
+      SET progress_tool_calls = ?,
+          progress_last_tool = ?,
+          progress_last_message = ?,
+          progress_updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      progress.toolCalls,
+      progress.lastTool || null,
+      progress.lastMessage ? progress.lastMessage.slice(0, 1000) : null,
+      id
+    );
+  }
+
   setDone(id: number, result: string): void {
     this.db.prepare(`
       UPDATE tasks 
@@ -166,12 +192,12 @@ export class TaskQueue {
     `).run(result, id);
   }
 
-  setFailed(id: number, error: string): void {
+  setFailed(id: number, error: string, errorType?: string): void {
     this.db.prepare(`
       UPDATE tasks 
-      SET status = 'failed', error = ?, completed_at = datetime('now')
+      SET status = 'failed', error = ?, error_type = ?, completed_at = datetime('now')
       WHERE id = ?
-    `).run(error, id);
+    `).run(error, errorType || null, id);
   }
 
   cancel(id: number): boolean {

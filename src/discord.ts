@@ -17,6 +17,8 @@ export interface DiscordConfig {
   token: string;
   notifyUserId?: string;
   notifyChannelId?: string;
+  allowedUserIds?: string[];
+  allowedChannelIds?: string[];
 }
 
 export class DiscordBot implements NotificationChannel {
@@ -115,6 +117,14 @@ export class DiscordBot implements NotificationChannel {
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!this.isAllowed(interaction)) {
+      await interaction.reply({ 
+        content: "❌ You don't have permission to use this bot.", 
+        ephemeral: true 
+      });
+      return;
+    }
+
     try {
       switch (interaction.commandName) {
         case "task":
@@ -139,6 +149,24 @@ export class DiscordBot implements NotificationChannel {
         await interaction.reply({ content: `Error: ${msg}`, ephemeral: true });
       }
     }
+  }
+
+  private isAllowed(interaction: ChatInputCommandInteraction): boolean {
+    const { allowedUserIds, allowedChannelIds } = this.config;
+    
+    if (!allowedUserIds?.length && !allowedChannelIds?.length) {
+      return true;
+    }
+    
+    if (allowedUserIds?.includes(interaction.user.id)) {
+      return true;
+    }
+    
+    if (allowedChannelIds?.includes(interaction.channelId)) {
+      return true;
+    }
+    
+    return false;
   }
 
   private async handleTask(interaction: ChatInputCommandInteraction): Promise<void> {
