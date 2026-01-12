@@ -14,10 +14,15 @@ export interface Task {
   result: string | null;
   error: string | null;
   session_id: string | null;
+  iteration: number;
+  max_iterations: number;
+  retry_count: number;
+  max_retries: number;
+  retry_after: string | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
-  created_by: string | null; // discord user id or slack user id
+  created_by: string | null;
   source: "discord" | "slack" | "cli";
 }
 
@@ -25,6 +30,8 @@ export interface TaskCreate {
   prompt: string;
   project_path?: string;
   priority?: TaskPriority;
+  max_iterations?: number;
+  max_retries?: number;
   created_by?: string;
   source: "discord" | "slack" | "cli";
 }
@@ -51,6 +58,11 @@ export function initDb(): Database.Database {
       result TEXT,
       error TEXT,
       session_id TEXT,
+      iteration INTEGER DEFAULT 0,
+      max_iterations INTEGER DEFAULT 10,
+      retry_count INTEGER DEFAULT 0,
+      max_retries INTEGER DEFAULT 3,
+      retry_after TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       started_at TEXT,
       completed_at TEXT,
@@ -60,7 +72,20 @@ export function initDb(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
+    CREATE INDEX IF NOT EXISTS idx_tasks_retry_after ON tasks(retry_after);
   `);
+
+  const migrations = [
+    `ALTER TABLE tasks ADD COLUMN iteration INTEGER DEFAULT 0`,
+    `ALTER TABLE tasks ADD COLUMN max_iterations INTEGER DEFAULT 10`,
+    `ALTER TABLE tasks ADD COLUMN retry_count INTEGER DEFAULT 0`,
+    `ALTER TABLE tasks ADD COLUMN max_retries INTEGER DEFAULT 3`,
+    `ALTER TABLE tasks ADD COLUMN retry_after TEXT`,
+  ];
+  
+  for (const sql of migrations) {
+    try { db.exec(sql); } catch { /* column exists */ }
+  }
 
   return db;
 }
@@ -74,14 +99,16 @@ export class TaskQueue {
 
   create(task: TaskCreate): Task {
     const stmt = this.db.prepare(`
-      INSERT INTO tasks (prompt, project_path, priority, created_by, source)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO tasks (prompt, project_path, priority, max_iterations, max_retries, created_by, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       task.prompt,
       task.project_path || null,
       task.priority || "medium",
+      task.max_iterations || 10,
+      task.max_retries || 3,
       task.created_by || null,
       task.source
     );
@@ -121,6 +148,16 @@ export class TaskQueue {
     `).run(sessionId, id);
   }
 
+  incrementIteration(id: number): number {
+    this.db.prepare(`UPDATE tasks SET iteration = iteration + 1 WHERE id = ?`).run(id);
+    const task = this.get(id);
+    return task?.iteration || 0;
+  }
+
+  updateSessionId(id: number, sessionId: string): void {
+    this.db.prepare(`UPDATE tasks SET session_id = ? WHERE id = ?`).run(sessionId, id);
+  }
+
   setDone(id: number, result: string): void {
     this.db.prepare(`
       UPDATE tasks 
@@ -146,8 +183,47 @@ export class TaskQueue {
 
   resetToPending(id: number): void {
     this.db.prepare(`
-      UPDATE tasks SET status = 'pending', started_at = NULL, session_id = NULL WHERE id = ?
+      UPDATE tasks SET status = 'pending', started_at = NULL, session_id = NULL, iteration = 0 WHERE id = ?
     `).run(id);
+  }
+
+  scheduleRetry(id: number, delaySeconds: number): boolean {
+    const task = this.get(id);
+    if (!task || task.retry_count >= task.max_retries) {
+      return false;
+    }
+    
+    const retryAfter = new Date(Date.now() + delaySeconds * 1000).toISOString();
+    this.db.prepare(`
+      UPDATE tasks 
+      SET status = 'pending', 
+          retry_count = retry_count + 1,
+          retry_after = ?,
+          iteration = 0,
+          session_id = NULL,
+          started_at = NULL,
+          error = NULL
+      WHERE id = ?
+    `).run(retryAfter, id);
+    return true;
+  }
+
+  getNextRetryable(): Task | undefined {
+    const now = new Date().toISOString();
+    return this.db.prepare(`
+      SELECT * FROM tasks 
+      WHERE status = 'pending'
+        AND (retry_after IS NULL OR retry_after <= ?)
+      ORDER BY 
+        CASE priority 
+          WHEN 'urgent' THEN 0
+          WHEN 'high' THEN 1 
+          WHEN 'medium' THEN 2 
+          WHEN 'low' THEN 3 
+        END,
+        created_at ASC
+      LIMIT 1
+    `).get(now) as Task | undefined;
   }
 
   list(status?: TaskStatus, limit = 10): Task[] {

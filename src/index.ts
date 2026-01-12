@@ -43,7 +43,9 @@ async function main() {
     workspacePath: process.env.OPENCODE_WORKSPACE || process.cwd(),
     opencodePath: process.env.OPENCODE_PATH,
     taskTimeoutMs: process.env.TASK_TIMEOUT_MS ? parseInt(process.env.TASK_TIMEOUT_MS, 10) : 30 * 60 * 1000,
+    iterationTimeoutMs: process.env.ITERATION_TIMEOUT_MS ? parseInt(process.env.ITERATION_TIMEOUT_MS, 10) : 10 * 60 * 1000,
     model: process.env.OPENCODE_MODEL,
+    agent: process.env.OPENCODE_AGENT,
   });
 
   const shutdown = async () => {
