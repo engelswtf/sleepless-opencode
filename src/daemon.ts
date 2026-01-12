@@ -88,15 +88,25 @@ interface IterationResult {
 }
 
 const COMPLETION_SIGNALS = [
+  "[TASK_COMPLETE]",
+  "[task_complete]",
   "task complete",
-  "task completed",
+  "task completed", 
   "successfully completed",
   "all done",
   "finished successfully",
   "completed successfully",
-  "[TASK_COMPLETE]",
   "nothing left to do",
   "all steps completed",
+  "all todos completed",
+  "todos completed: ",
+];
+
+const STRONG_COMPLETION_SIGNALS = [
+  "[TASK_COMPLETE]",
+  "[task_complete]",
+  "todos completed:",
+  "all todos completed",
 ];
 
 const CONTINUATION_PROMPT = `[SYSTEM REMINDER - TODO CONTINUATION]
@@ -429,25 +439,59 @@ IMPORTANT INSTRUCTIONS:
 
   private detectCompletion(output: string): boolean {
     const lowerOutput = output.toLowerCase();
-    return COMPLETION_SIGNALS.some(signal => lowerOutput.includes(signal.toLowerCase()));
+    
+    // Strong signals are definitive - task is complete
+    const hasStrongSignal = STRONG_COMPLETION_SIGNALS.some(
+      signal => lowerOutput.includes(signal.toLowerCase())
+    );
+    if (hasStrongSignal) return true;
+    
+    // Weak signals need additional context
+    const hasWeakSignal = COMPLETION_SIGNALS.some(
+      signal => lowerOutput.includes(signal.toLowerCase())
+    );
+    if (!hasWeakSignal) return false;
+    
+    // If weak signal present, check it's not just planning language
+    const planningPhrases = ["i will", "i'll", "let me", "next i", "then i"];
+    const hasPlanningAfterCompletion = planningPhrases.some(p => {
+      const completionIdx = lowerOutput.lastIndexOf("complete");
+      const planningIdx = lowerOutput.lastIndexOf(p);
+      return planningIdx > completionIdx && completionIdx >= 0;
+    });
+    
+    return !hasPlanningAfterCompletion;
   }
 
   private detectContinuationNeeded(output: string, rawOutput: string): boolean {
+    // If we already detected completion, don't continue
+    if (this.detectCompletion(output)) {
+      return false;
+    }
+    
     const hasToolCalls = rawOutput.includes('"type":"tool_call"') || 
                          rawOutput.includes('"type":"tool_result"');
     
     const lowerOutput = output.toLowerCase();
+    
+    // Check for explicit "waiting" or "need input" signals - stop if found
+    const stoppingPhrases = [
+      "waiting for", "need more information", "please provide",
+      "could you clarify", "what would you like", "should i proceed"
+    ];
+    const needsInput = stoppingPhrases.some(p => lowerOutput.includes(p));
+    if (needsInput) return false;
+    
+    // Check for active work indicators
     const planningPhrases = [
       "i will", "i'll", "let me", "first,", "next,", "then,",
       "step 1", "step 2", "here's my plan", "i need to",
-      "working on", "processing", "executing"
+      "working on", "processing", "executing", "creating",
+      "todo", "in_progress", "pending"
     ];
     const hasPlanningLanguage = planningPhrases.some(p => lowerOutput.includes(p));
 
-    const questionPhrases = ["should i", "would you like", "do you want"];
-    const hasQuestion = questionPhrases.some(p => lowerOutput.includes(p));
-
-    return hasToolCalls || (hasPlanningLanguage && !hasQuestion);
+    return hasToolCalls || hasPlanningLanguage;
   }
 
   private parseOpenCodeOutput(output: string): string {
