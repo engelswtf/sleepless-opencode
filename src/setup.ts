@@ -186,12 +186,14 @@ async function main() {
   print("  1. Discord bot (recommended)");
   print("  2. Slack bot");
   print("  3. Both Discord and Slack");
+  print("  4. MCP only (no bot, queue tasks from OpenCode)");
   print("");
   
   const channelChoice = await question("Choice [1]: ") || "1";
   
   const useDiscord = channelChoice === "1" || channelChoice === "3";
   const useSlack = channelChoice === "2" || channelChoice === "3";
+  const mcpOnly = channelChoice === "4";
 
   if (useDiscord) {
     printSection("Discord Bot Setup");
@@ -272,6 +274,11 @@ async function main() {
   const defaultDataDir = join(homedir(), ".sleepless-opencode");
   config.SLEEPLESS_DATA_DIR = defaultDataDir;
 
+  if (mcpOnly) {
+    print("");
+    print("MCP-only mode selected. You'll queue tasks directly from OpenCode.");
+  }
+
   print("");
   const advancedSettings = await question("Configure advanced settings? (y/N): ");
   
@@ -321,8 +328,10 @@ async function main() {
     .map(([k, v]) => `${k}=${v}`)
     .join("\n");
 
-  writeFileSync(".env", envContent + "\n");
-  print("Created .env file");
+  const installDir = dirname(__dirname);
+  const envPath = join(installDir, ".env");
+  writeFileSync(envPath, envContent + "\n");
+  print(`Created ${envPath}`);
 
   print("");
   print("Setting up MCP integration...");

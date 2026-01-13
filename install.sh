@@ -6,24 +6,41 @@ echo "sleepless-opencode Installer"
 echo "============================"
 echo ""
 
-INSTALL_DIR="${SLEEPLESS_INSTALL_DIR:-$HOME/.sleepless-opencode}"
-
+# Check Node.js
 if command -v node &> /dev/null; then
     NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
     if [ "$NODE_VERSION" -lt 18 ]; then
         echo "Error: Node.js 18+ required (found: $(node -v))"
         exit 1
     fi
-    echo "Found Node.js $(node -v)"
+    echo "[OK] Node.js $(node -v)"
 else
     echo "Error: Node.js not found. Please install Node.js 18+"
+    echo ""
+    echo "Install with:"
+    echo "  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -"
+    echo "  sudo apt-get install -y nodejs"
     exit 1
 fi
 
+# Check npm
 if ! command -v npm &> /dev/null; then
     echo "Error: npm not found"
     exit 1
 fi
+echo "[OK] npm $(npm -v)"
+
+# Check git
+if ! command -v git &> /dev/null; then
+    echo "Error: git not found. Please install git first."
+    echo ""
+    echo "Install with:"
+    echo "  sudo apt-get install git"
+    exit 1
+fi
+echo "[OK] git $(git --version | cut -d' ' -f3)"
+
+INSTALL_DIR="${SLEEPLESS_INSTALL_DIR:-$HOME/.sleepless-opencode}"
 
 echo ""
 echo "Installing to: $INSTALL_DIR"
@@ -36,36 +53,42 @@ if [ -d "$INSTALL_DIR" ]; then
         exit 0
     fi
     cd "$INSTALL_DIR"
-    git pull origin main 2>/dev/null || true
+    echo "Pulling latest changes..."
+    git pull origin main || {
+        echo "Warning: Could not pull updates. Continuing with existing code."
+    }
 else
+    echo "Cloning repository..."
     git clone https://github.com/engelswtf/sleepless-opencode.git "$INSTALL_DIR"
     cd "$INSTALL_DIR"
 fi
 
 echo ""
 echo "Installing dependencies..."
-npm install --silent
+npm install --loglevel warn
 
 echo ""
 echo "Building..."
-npm run build --silent
+npm run build
 
 echo ""
-echo "Installation complete!"
+echo "============================================"
+echo "  Installation complete!"
+echo "============================================"
 echo ""
-echo "-------------------------------------------"
-echo ""
-echo "Next steps:"
-echo ""
-echo "1. Run the setup wizard:"
-echo "   cd $INSTALL_DIR"
-echo "   npm run setup"
-echo ""
-echo "2. Start the daemon:"
-echo "   npm start"
-echo ""
-echo "3. Or install as a service (Linux):"
-echo "   sudo cp sleepless-opencode.service /etc/systemd/system/"
-echo "   sudo systemctl enable sleepless-opencode"
-echo "   sudo systemctl start sleepless-opencode"
-echo ""
+
+# Offer to run setup
+read -p "Run setup wizard now? (Y/n): " RUN_SETUP
+if [ "$RUN_SETUP" != "n" ] && [ "$RUN_SETUP" != "N" ]; then
+    echo ""
+    npm run setup
+else
+    echo ""
+    echo "To configure later, run:"
+    echo "  cd $INSTALL_DIR"
+    echo "  npm run setup"
+    echo ""
+    echo "Then start the daemon:"
+    echo "  npm start"
+    echo ""
+fi

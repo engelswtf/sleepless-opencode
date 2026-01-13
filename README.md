@@ -66,15 +66,17 @@ npm run setup  # Interactive configuration
 npm start
 ```
 
-### Minimal Setup
+### MCP-Only Mode (No Bot Required)
 
 ```bash
-# 1. Set your Discord bot token
-echo "DISCORD_BOT_TOKEN=your-token-here" > .env
-
-# 2. Start the daemon
+# Just run the setup wizard
+npm run setup
+# Select option 4: "MCP only"
+# Then start the daemon
 npm start
 ```
+
+Now you can queue tasks directly from OpenCode using `sleepless_queue`.
 
 ---
 
@@ -187,25 +189,6 @@ Automatic log rotation when file exceeds 10MB (configurable).
 | `/tasks filter:pending` | Filter by status |
 | `/cancel <id>` | Cancel a pending task |
 
-### CLI Commands
-
-```bash
-# Add tasks
-sleepless add "Implement OAuth2" --priority high
-sleepless add "Add OAuth tests" --depends-on 1
-
-# View queue
-sleepless list
-sleepless list --status pending
-sleepless status
-
-# Task details
-sleepless get 42
-
-# Cancel
-sleepless cancel 42
-```
-
 ### MCP Server
 
 Expose tools to agents via MCP:
@@ -244,7 +227,7 @@ Tools: `sleepless_queue`, `sleepless_status`, `sleepless_list`, `sleepless_cance
 | `WEBHOOK_EVENTS` | all | Comma-separated: `started,completed,failed` |
 | **Daemon** |||
 | `OPENCODE_WORKSPACE` | `cwd` | Default workspace path |
-| `OPENCODE_AGENT` | `sleepless-executor` | Agent to use for tasks |
+| `OPENCODE_AGENT` | (default) | Agent to use for tasks (optional) |
 | `OPENCODE_PATH` | auto | Path to opencode binary |
 | `POLL_INTERVAL_MS` | `5000` | Queue poll interval |
 | `TASK_TIMEOUT_MS` | `1800000` | Task timeout (30 min) |
@@ -386,23 +369,6 @@ sudo cp sleepless-opencode.service /etc/systemd/system/
 sudo systemctl enable sleepless-opencode
 sudo systemctl start sleepless-opencode
 sudo journalctl -u sleepless-opencode -f
-```
-
-### launchd (macOS)
-
-```bash
-cp com.sleepless-opencode.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.sleepless-opencode.plist
-```
-
-### Docker
-
-```bash
-docker run -d \
-  --name sleepless \
-  -e DISCORD_BOT_TOKEN=your-token \
-  -v sleepless-data:/app/data \
-  ghcr.io/engelswtf/sleepless-opencode:latest
 ```
 
 ### tmux (Quick)
